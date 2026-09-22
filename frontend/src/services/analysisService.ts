@@ -1,145 +1,70 @@
 import type { AnalysisInput, AnalysisResponse, AnalysisService, RiskStatus, Severity, ThreatIndicator } from '../types/analysis'
 
-const suspiciousTerms = ['verify', 'urgent', 'password', 'suspended', 'immediately', 'login', 'credential', 'confirm', 'account', 'expire']
-const credentialTerms = ['password', 'credential', 'sign in', 'login', 'verify your account']
-const urgencyTerms = ['urgent', 'immediately', 'within 24 hours', 'suspended', 'expire', 'final notice']
-const brandTerms = ['microsoft', 'paypal', 'apple', 'amazon', 'bank', 'netflix', 'google']
-const riskyTlds = ['.zip', '.click', '.top', '.xyz', '.work', '.live']
+export type AnalysisErrorCode = 'configuration' | 'validation' | 'timeout' | 'network' | 'invalid_response' | 'server'
 
-function hash(value: string) {
-  let result = 2166136261
-  for (let index = 0; index < value.length; index += 1) {
-    result ^= value.charCodeAt(index)
-    result = Math.imul(result, 16777619)
-  }
-  return (result >>> 0).toString(16).padStart(8, '0')
-}
+export class AnalysisServiceError extends Error {
+  readonly code: AnalysisErrorCode
 
-function statusFor(score: number): RiskStatus {
-  if (score >= 75) return 'high_risk'
-  if (score >= 45) return 'suspicious'
-  if (score >= 20) return 'low_risk'
-  return 'safe'
-}
-
-function severityFor(weight: number): Severity {
-  if (weight >= 28) return 'critical'
-  if (weight >= 18) return 'high'
-  if (weight >= 10) return 'medium'
-  return 'low'
-}
-
-function getDomain(rawUrl?: string) {
-  if (!rawUrl) return undefined
-  try {
-    const normalized = /^https?:\/\//i.test(rawUrl) ? rawUrl : `https://${rawUrl}`
-    return new URL(normalized).hostname.toLowerCase()
-  } catch {
-    return undefined
-  }
-}
-
-function addIndicator(indicators: ThreatIndicator[], indicator: ThreatIndicator) {
-  if (!indicators.some((item) => item.type === indicator.type)) indicators.push(indicator)
-}
-
-async function mockAnalyze(input: AnalysisInput): Promise<AnalysisResponse> {
-  const message = input.message.trim()
-  const lower = message.toLowerCase()
-  const domain = getDomain(input.url)
-  const indicators: ThreatIndicator[] = []
-  let emailScore = 4
-  let urlScore = input.url ? 8 : 0
-
-  const matchedTerms = suspiciousTerms.filter((term) => lower.includes(term))
-  emailScore += Math.min(32, matchedTerms.length * 5)
-
-  if (credentialTerms.some((term) => lower.includes(term))) {
-    emailScore += 28
-    addIndicator(indicators, { type: 'credential_request', severity: 'critical', message: 'Credential verification request detected', source: 'email' })
-  }
-  if (urgencyTerms.some((term) => lower.includes(term))) {
-    emailScore += 16
-    addIndicator(indicators, { type: 'urgency', severity: 'medium', message: 'Urgent account-related language detected', source: 'email' })
-  }
-  if (brandTerms.some((term) => lower.includes(term)) && credentialTerms.some((term) => lower.includes(term))) {
-    emailScore += 12
-    addIndicator(indicators, { type: 'impersonation', severity: 'high', message: 'Brand language appears alongside an account request', source: 'email' })
-  }
-  if (/dear (customer|user|member)/i.test(message)) {
-    emailScore += 8
-    addIndicator(indicators, { type: 'generic_salutation', severity: 'low', message: 'Non-personalized recipient greeting observed', source: 'email' })
-  }
-
-  if (input.url) {
-    if (!/^https:\/\//i.test(input.url)) {
-      urlScore += 18
-      addIndicator(indicators, { type: 'transport_security', severity: 'high', message: 'Link does not declare an HTTPS scheme', source: 'url' })
-    } else {
-      addIndicator(indicators, { type: 'https_present', severity: 'safe', message: 'HTTPS scheme is present', source: 'url' })
-    }
-    if (domain) {
-      const parts = domain.split('.')
-      if (parts.length > 3) {
-        urlScore += 16
-        addIndicator(indicators, { type: 'nested_subdomain', severity: 'medium', message: 'Deeply nested subdomain structure detected', source: 'url' })
-      }
-      if (riskyTlds.some((tld) => domain.endsWith(tld))) {
-        urlScore += 30
-        addIndicator(indicators, { type: 'risky_tld', severity: 'high', message: 'Domain uses a frequently abused top-level domain', source: 'url' })
-      }
-      if (domain.includes('xn--') || /\d{1,3}(?:\.\d{1,3}){3}/.test(domain)) {
-        urlScore += 35
-        addIndicator(indicators, { type: 'obfuscated_host', severity: 'critical', message: 'Obfuscated or direct IP host detected', source: 'url' })
-      }
-      if (/[0-9-].*[0-9-].*[0-9-]/.test(domain)) {
-        urlScore += 12
-        addIndicator(indicators, { type: 'domain_pattern', severity: 'medium', message: 'Unusual domain naming pattern observed', source: 'url' })
-      }
-    } else {
-      urlScore += 24
-      addIndicator(indicators, { type: 'invalid_url', severity: 'high', message: 'URL structure could not be validated', source: 'url' })
-    }
-  }
-
-  const embeddedLinks = message.match(/https?:\/\/[^\s)]+/gi) ?? []
-  if (embeddedLinks.length > 0) {
-    emailScore += Math.min(14, embeddedLinks.length * 7)
-    addIndicator(indicators, { type: 'embedded_link', severity: severityFor(embeddedLinks.length * 7), message: `${embeddedLinks.length} external link${embeddedLinks.length === 1 ? '' : 's'} found in message content`, source: 'email' })
-  }
-
-  emailScore = Math.min(98, emailScore)
-  urlScore = Math.min(98, urlScore)
-  const activeScores = input.url ? [emailScore, urlScore] : [emailScore]
-  const strongest = Math.max(...activeScores)
-  const average = activeScores.reduce((sum, score) => sum + score, 0) / activeScores.length
-  const riskScore = Math.round(strongest * 0.64 + average * 0.36)
-
-  if (indicators.length === 0) {
-    indicators.push({ type: 'no_elevated_signal', severity: 'safe', message: 'No elevated phishing patterns were identified', source: 'system' })
-  }
-
-  const fingerprint = hash(`${lower}|${input.url?.toLowerCase() ?? ''}`)
-  return {
-    scan_id: `scan_${fingerprint}`,
-    created_at: new Date(1704067200000 + (Number.parseInt(fingerprint.slice(0, 6), 16) % 31536000) * 1000).toISOString(),
-    verdict: statusFor(riskScore),
-    risk_score: riskScore,
-    detectors: {
-      email: { score: emailScore, status: statusFor(emailScore) },
-      url: { score: urlScore, status: input.url ? statusFor(urlScore) : 'safe' },
-    },
-    indicators,
-    metadata: {
-      domain,
-      message_characters: message.length,
-      links_observed: embeddedLinks.length + (input.url ? 1 : 0),
-      analysis_version: 'DEV-RULESET-0.4',
-    },
+  constructor(code: AnalysisErrorCode, message: string) {
+    super(message)
+    this.name = 'AnalysisServiceError'
+    this.code = code
   }
 }
 
 const storageKey = 'authentimail:reports'
+const minimumScanDurationMs = 3300
+const requestTimeoutMs = 20000
+
+function getApiBaseUrl() {
+  return (import.meta.env.VITE_API_URL as string | undefined)?.trim().replace(/\/$/, '') ?? ''
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isRiskStatus(value: unknown): value is RiskStatus {
+  return value === 'safe' || value === 'low_risk' || value === 'suspicious' || value === 'high_risk'
+}
+
+function isSeverity(value: unknown): value is Severity {
+  return value === 'critical' || value === 'high' || value === 'medium' || value === 'low' || value === 'safe'
+}
+
+function isIndicator(value: unknown): value is ThreatIndicator {
+  if (!isRecord(value)) return false
+  return typeof value.type === 'string'
+    && isSeverity(value.severity)
+    && typeof value.message === 'string'
+    && ['email', 'url', 'authentication', 'system'].includes(String(value.source))
+}
+
+function isDetector(value: unknown) {
+  return isRecord(value)
+    && typeof value.score === 'number'
+    && value.score >= 0
+    && value.score <= 100
+    && isRiskStatus(value.status)
+}
+
+function isAnalysisResponse(value: unknown): value is AnalysisResponse {
+  if (!isRecord(value) || !isRecord(value.detectors) || !isRecord(value.metadata)) return false
+  return typeof value.scan_id === 'string'
+    && typeof value.created_at === 'string'
+    && isRiskStatus(value.verdict)
+    && typeof value.risk_score === 'number'
+    && value.risk_score >= 0
+    && value.risk_score <= 100
+    && isDetector(value.detectors.email)
+    && isDetector(value.detectors.url)
+    && Array.isArray(value.indicators)
+    && value.indicators.every(isIndicator)
+    && (typeof value.metadata.domain === 'string' || value.metadata.domain === undefined || value.metadata.domain === null)
+    && typeof value.metadata.message_characters === 'number'
+    && typeof value.metadata.links_observed === 'number'
+    && typeof value.metadata.analysis_version === 'string'
+}
 
 function saveReport(result: AnalysisResponse) {
   try {
@@ -147,7 +72,7 @@ function saveReport(result: AnalysisResponse) {
     reports[result.scan_id] = result
     sessionStorage.setItem(storageKey, JSON.stringify(reports))
   } catch {
-    // Browsers with disabled storage can still complete and view the active scan.
+    // Report persistence is optional and never includes the submitted message body.
   }
 }
 
@@ -160,11 +85,72 @@ export function getStoredReport(scanId: string): AnalysisResponse | undefined {
   }
 }
 
+async function getValidationMessage(response: Response) {
+  try {
+    const payload: unknown = await response.json()
+    if (!isRecord(payload) || !Array.isArray(payload.detail)) return undefined
+    const firstDetail = payload.detail[0]
+    if (isRecord(firstDetail) && typeof firstDetail.message === 'string') return firstDetail.message
+    return undefined
+  } catch {
+    return undefined
+  }
+}
+
+async function requestAnalysis(input: AnalysisInput): Promise<AnalysisResponse> {
+  const apiBaseUrl = getApiBaseUrl()
+  if (!apiBaseUrl) {
+    throw new AnalysisServiceError('configuration', 'The analysis service is not configured for this environment.')
+  }
+
+  const controller = new AbortController()
+  const timeout = window.setTimeout(() => controller.abort(), requestTimeoutMs)
+
+  try {
+    const response = await fetch(`${apiBaseUrl}/api/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({
+        email: input.message.trim() || undefined,
+        url: input.url?.trim() || undefined,
+      }),
+      signal: controller.signal,
+    })
+
+    if (!response.ok) {
+      if (response.status === 422) {
+        const detail = await getValidationMessage(response)
+        throw new AnalysisServiceError('validation', detail ?? 'The submitted message or URL could not be validated.')
+      }
+      throw new AnalysisServiceError('server', 'The analysis service could not complete this request. Please try again.')
+    }
+
+    const payload: unknown = await response.json()
+    if (!isAnalysisResponse(payload)) {
+      throw new AnalysisServiceError('invalid_response', 'The analysis service returned an invalid report. Please try again.')
+    }
+    return payload
+  } catch (error) {
+    if (error instanceof AnalysisServiceError) throw error
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new AnalysisServiceError('timeout', 'The analysis service took too long to respond. Your input was not saved.')
+    }
+    throw new AnalysisServiceError('network', 'AUTHENTIMAIL could not reach the analysis service. Check the connection and try again.')
+  } finally {
+    window.clearTimeout(timeout)
+  }
+}
+
 export const analysisService: AnalysisService = {
   async analyze(input) {
-    await new Promise((resolve) => window.setTimeout(resolve, 3600))
-    const result = await mockAnalyze(input)
-    saveReport(result)
-    return result
+    const requestOutcome = requestAnalysis(input).then(
+      (result) => ({ ok: true as const, result }),
+      (error: unknown) => ({ ok: false as const, error }),
+    )
+    await new Promise((resolve) => window.setTimeout(resolve, minimumScanDurationMs))
+    const outcome = await requestOutcome
+    if (!outcome.ok) throw outcome.error
+    saveReport(outcome.result)
+    return outcome.result
   },
 }

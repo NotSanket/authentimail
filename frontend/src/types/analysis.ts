@@ -29,7 +29,7 @@ export interface AnalysisResponse {
   }
   indicators: ThreatIndicator[]
   metadata: {
-    domain?: string
+    domain?: string | null
     message_characters: number
     links_observed: number
     analysis_version: string

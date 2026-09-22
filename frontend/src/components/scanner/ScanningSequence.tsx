@@ -11,7 +11,7 @@ const stages = [
   { label: 'Assembling risk profile', detail: 'Generating an explainable verdict and evidence trail', icon: Radar, channel: 'output' },
 ]
 
-export function ScanningSequence({ messageLength, hasUrl }: { messageLength: number; hasUrl: boolean }) {
+export function ScanningSequence({ messageLength, hasUrl, isTakingLonger }: { messageLength: number; hasUrl: boolean; isTakingLonger: boolean }) {
   const [active, setActive] = useState(0)
 
   useEffect(() => {
@@ -22,7 +22,7 @@ export function ScanningSequence({ messageLength, hasUrl }: { messageLength: num
   const progress = ((active + 1) / stages.length) * 100
   return (
     <motion.div layoutId="analysis-surface" className="scanner-screen" initial={{ opacity: 0.5, scale: 0.992 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: 0.48, ease: [0.22, 1, 0.36, 1] }}>
-      <div className="scanner-topline"><span className="eyebrow"><span className="live-dot" /> Analysis in progress</span><span className="mono">SECURE LOCAL PIPELINE</span></div>
+      <div className="scanner-topline"><span className="eyebrow"><span className="live-dot" /> Analysis in progress</span><span className="mono">AUTHENTIMAIL API PIPELINE</span></div>
       <div className="scanner-main">
         <div className={`scanner-architecture stage-${stages[active].channel}`} aria-hidden="true">
           <div className="scanner-source source-email"><i />EMAIL SIGNAL<strong>{messageLength.toLocaleString()} CHARS</strong></div>
@@ -39,6 +39,7 @@ export function ScanningSequence({ messageLength, hasUrl }: { messageLength: num
             <motion.div className="scanner-current" key={active} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.24 }}><h2>{stages[active].label}</h2><p>{stages[active].detail}</p></motion.div>
           </AnimatePresence>
           <div className="scan-progress"><motion.span animate={{ width: `${progress}%` }} transition={{ ease: 'easeOut' }} /></div>
+          {isTakingLonger && <motion.p className="scanner-waiting" role="status" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>The analysis service is still processing the submitted signals. No additional progress is being inferred.</motion.p>}
           <ol>
             {stages.map((stage, index) => {
               const Icon = stage.icon
